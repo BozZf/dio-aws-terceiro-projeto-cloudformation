@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template DIO - Validacao de arquivos .log com S3 e Lambda'
+
+Parameters:
+  NomeDoBucket:
+    Type: String
+    Default: 'bucket-desafio-dio-logs'
+    Description: 'Bucket Logs'
+
+Resources:
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaS3AndLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: 'arn:aws:logs:*:*:*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:DeleteObject'
+                Resource: !Join ['', ['arn:aws:s3:::', !Ref NomeDoBucket, '/*']]
+
+  ValidationLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.11
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+
+          s3 = boto3.client('s3')
+
+          def handler(event, context):
+              for record in event['Records']:
+                  bucket = record['s3']['bucket']['name']
+                  key = record['s3']['object']['key']
+                  
+                  print(f"Analisando o arquivo: {key} enviado ao bucket: {bucket}")
+                  
+                  if not key.lower().endswith('.log'):
+                      print(f"Formato invalido detectado para '{key}'. Removendo objeto...")
+                      s3.delete_object(Bucket=bucket, Key=key)
+                      print(f"Arquivo '{key}' deletado com sucesso do bucket.")
+                  else:
+                      print(f"Arquivo valido ('.log'): '{key}'. Mantido no armazenamento.")
+
+  S3InvokeLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt ValidationLambda.Arn
+      Principal: s3.amazonaws.com
+      SourceArn: !Join ['', ['arn:aws:s3:::', !Ref NomeDoBucket]]
+
+  LogBucket:
+    Type: 'AWS::S3::Bucket'
+    DependsOn: S3InvokeLambdaPermission
+    Properties:
+      BucketName: !Ref NomeDoBucket
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt ValidationLambda.Arn
+
+Outputs:
+  BucketCriado:
+    Description: 'Bucket Logs'
+    Value: !Ref LogBucket
+  LambdaArn:
+    Description: 'ARN da Lambda de Validacao'
+    Value: !GetAtt ValidationLambda.Arn
